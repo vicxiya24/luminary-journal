@@ -1,0 +1,52 @@
+Luminary Journal: Architecture & Competitor Analysis
+Part 1: Competitor Landscape
+I've scanned the current market for AI-powered skincare apps. Here is what exists today:
+
+Skin Bliss / Skinsort: These are your biggest direct competitors. They scan ingredient lists, tell you if products clash, and let you build a routine.
+SkinPal / Trove: These focus heavily on taking daily selfies and using computer vision to track your acne/redness over time.
+Yuka / Think Dirty: These scan barcodes to tell you if an ingredient is "toxic" or safe.
+Do any of them do EXACTLY what Luminary Journal does?
+No. Currently, the market split is either purely "tracker apps" (looking backwards at what happened) or "ingredient dictionaries" (looking at static lists).
+
+Luminary Journal is the only one that predicts the future. Your implementation of the Swap Simulator and the Dashboard Projections (Projected vs. Actual Tracking) is entirely unique. No competitor currently draws a 4-week forecasted timeline of your skin metrics based on an AI's analysis of your routine.
+
+How to stand out even more?
+The Webtoon/Gaming Aesthetic: Most skincare apps look incredibly clinical, sterile, or like medical charts. If you execute your "cute colorful video game" aesthetic with character illustrations at the bottom of the screen (like a tamagotchi representing your skin health), it will be insanely viral on TikTok.
+The "Purge" Warning: You could have the AI specifically tag a timeline period as the "Expected Purge Phase" (when starting Retinol/AHA) so users don't panic and quit.
+Part 2: Codebase Architecture Guide
+Since we "vibe coded" this fast, here is the map of the central nervous system I built for you so you can understand every wire.
+
+The Stack Overview
+Next.js (App Router): The React framework managing all the pages and API routes.
+Supabase: Your PostgreSQL database and Authentication provider.
+Vercel AI SDK (@ai-sdk/google): The connector that securely talks to Gemini Flash to generate JSON or text.
+Recharts: The math library drawing your Dashboard graphs.
+Tailwind CSS: The utility classes styling everything.
+Core Data Flow (How the app thinks)
+1. Authentication (app/onboarding/page.tsx)
+When a user logs in, Supabase gives them a user_id. The onboarder immediately writes to the users table to store their skin_type, concerns, and medications. Why this matters: Every single time the AI is called, it actively reads this table first so it doesn't give dry-skin advice to an oily-skin user.
+
+2. The Routine Calendar (components/routine/RoutineCalendar.tsx)
+This is the drag-and-drop builder.
+
+It maintains a React useState object mapping 14 slots (e.g. mon_am, mon_pm) to an array of products.
+When you click "Save", it runs a Supabase .upsert() into the routines table, saving that exact JSON map.
+The Secret Trigger: The moment that save succeeds, I programmed a silent fetch('/api/forecast', { method: 'POST' }) to fire off in the background.
+3. The AI Brain (app/api/forecast/route.ts)
+This is where the magic happens.
+
+This serverless route runs entirely invisible to the user.
+It receives the new routine, builds a prompt containing the user's skin profile and ingredient lists, and sends it to Gemini.
+We force Gemini to reply strictly with a JSON Array of 4 weeks of specific metrics (1 to 5 numeric values).
+The route strips out the JSON, loops over it, and inserts 4 rows into the projections table linked to the exact upcoming calendar dates!
+4. The Dashboard (app/dashboard/page.tsx)
+This is the visualizer.
+
+Upon loading, it does two massive database queries: It pulls ALL your historical journal_entries and ALL your future projections.
+The Bridge Algorithm: It loops over the real data array and the fake (forecast) data array. I wrote a specific math function here (lines 116-127) that finds the exact day the real data stops, and secretly overwrites the starting point of the fake data to match it. This is why the dashed line seamlessly sprouts out of the final solid dot.
+The Cap: It runs Array.slice(-12) right before giving the data to Recharts, ensuring your screen never looks like an unreadable spider web of infinite dots.
+5. User Editing (app/journal/page.tsx & CheckInFlow.tsx)
+When the week is done, the user clicks "Start Check-In".
+
+They fill out 5 sliders (Oiliness, Dryness, etc).
+It runs a Supabase .upsert (Update or Insert) specifically checking onConflict: 'user_id,week_start'. This guarantees that if they entered data for Monday already, and they do it again on Thursday, it correctly overwrites Monday's entry instead of duplicating it or crashing!
