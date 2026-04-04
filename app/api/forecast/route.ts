@@ -17,7 +17,12 @@ export async function POST(req: Request) {
     // 1. Ask Gemini to generate 4 weeks of projections
     const systemPrompt = `You are Luminary Journal's deeply analytical dermatological AI.
 The user has just changed their skincare routine for the week of ${weekStart}.
-ROUTINE SLOTS: ${JSON.stringify(slots, null, 2)}
+ROUTINE SLOTS (WITH FULL INGREDIENT LISTS): ${JSON.stringify(slots, null, 2)}
+
+CRITICAL INSTRUCTION: Analyze the ingredients meticulously. If you observe highly comedogenic ingredients (e.g. Coconut Oil, Cocoa Butter, Wheat Germ Oil, Isopropyl Myristate) or chemical clashes (e.g. Retinoids mixed with strong exfoliants in the exact same slot), you MUST severely penalize the routine. Breakouts, irritation, and dryness should spike high (4.0 - 5.0) and satisfaction should tank (1.0 - 2.0).
+Even if a highly comedogenic product is only used 1 or 2 times a week, you MUST still project significant breakouts.
+Crucially, if a routine contains harmful ingredients, the negative effects should compound or remain severely high through all 4 weeks. Do NOT simulate a miraculous recovery in Week 3 or 4 if the user continues to use the same routine. 
+Conversely, if the routine is clean and safe, metrics should steadily improve towards 1.0.
 
 Your task: Project how this routine will impact their skin over the exact next 4 weeks (1, 2, 3, and 4 weeks from the start date).
 Provide the predictions as a strict JSON array of exactly 4 objects.

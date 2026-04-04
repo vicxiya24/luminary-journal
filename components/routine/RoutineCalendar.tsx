@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { PRODUCTS, type Product } from '@/lib/data/products'
+import { ProductScores, type ProductScoreData } from '@/components/routine/ProductScores'
 
 export const DAYS = [
   { key: 'mon', label: 'Monday' },
@@ -69,6 +70,14 @@ export function RoutineCalendar({
   const [saving, setSaving] = useState(false)
   const [draggedItem, setDraggedItem] = useState<{ slotKey: SlotKey; index: number } | null>(null)
 
+  const [warnings, setWarnings] = useState<any[]>([])
+  const [analyzing, setAnalyzing] = useState(false)
+  const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(new Set())
+  const [scanCompleted, setScanCompleted] = useState(false)
+  
+  const [activeTab, setActiveTab] = useState<'picker' | 'analysis'>('picker')
+  const [productScores, setProductScores] = useState<Record<string, ProductScoreData>>({})
+
   const [customProducts, setCustomProducts] = useState<Product[]>([])
   const [isCreatingCustom, setIsCreatingCustom] = useState(false)
   const [customBrand, setCustomBrand] = useState('')
@@ -131,6 +140,12 @@ export function RoutineCalendar({
 
   const allProducts = useMemo(() => [...PRODUCTS, ...customProducts], [customProducts])
 
+  const uniqueActiveProducts = useMemo(() => {
+    const map = new Map<string, Product>()
+    Object.values(slots).forEach(arr => arr.forEach(p => map.set(p.id, p)))
+    return Array.from(map.values())
+  }, [slots])
+
   const filteredProducts = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return allProducts
@@ -141,6 +156,14 @@ export function RoutineCalendar({
         .includes(q)
     )
   }, [search, allProducts])
+
+  const activeOffendingIds = useMemo(() => {
+    return new Set(
+      warnings
+        .filter(w => !dismissedWarnings.has(w.id))
+        .flatMap(w => w.productIds)
+    )
+  }, [warnings, dismissedWarnings])
 
   const handleSaveCustomProduct = async () => {
     if (!userId || !customBrand || !customName || !customCategory) return
@@ -298,6 +321,68 @@ export function RoutineCalendar({
     })
   }
 
+  const analyzeIngredients = async () => {
+    setAnalyzing(true)
+    setWarnings([])
+    setDismissedWarnings(new Set())
+    setScanCompleted(false)
+    
+    const activeRoutine = Object.fromEntries(
+      Object.entries(slots).filter(([_, products]) => products.length > 0)
+    )
+
+    try {
+      const uniqueProds = Array.from(
+        new Map(Object.values(activeRoutine).flat().map(p => [p.id, p])).values()
+      )
+
+      const [warningsRes, scoresRes] = await Promise.all([
+        fetch('/api/analyze/warnings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            routineSlots: activeRoutine,
+            mergedProducts: allProducts
+          })
+        }),
+        fetch('/api/analyze/scores', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uniqueProducts: uniqueProds })
+        })
+      ])
+      
+      const wData = await warningsRes.json()
+      const sData = await scoresRes.json()
+
+      if (wData.error) throw new Error(wData.error)
+      if (sData.error) throw new Error(sData.error)
+
+      if (wData.warnings) setWarnings(wData.warnings)
+      if (sData.scores) {
+        setProductScores(
+          Object.fromEntries(sData.scores.map((s: any) => [s.productId, s]))
+        )
+      }
+      
+      setScanCompleted(true)
+      setActiveTab('analysis')
+    } catch (error: any) {
+      console.error(error)
+      alert("Analysis failed: " + error.message)
+    } finally {
+      setAnalyzing(false)
+    }
+  }
+
+  const dismissWarning = (id: string) => {
+    setDismissedWarnings(prev => {
+      const newSet = new Set(prev)
+      newSet.add(id)
+      return newSet
+    })
+  }
+
   const saveRoutineAction = async () => {
     const filledCount = Object.values(slots).filter((slot) => slot.length > 0).length
     if (filledCount === 0) {
@@ -306,6 +391,7 @@ export function RoutineCalendar({
     }
 
     setSaving(true)
+    setScanCompleted(false) // clear scan results on save
 
     const slotIdsOnly = Object.fromEntries(
       Object.entries(slots).map(([key, products]) => [
@@ -357,12 +443,16 @@ export function RoutineCalendar({
 
     // BACKGROUND AUTOMATION: Trigger AI Projection silently
     if (targetRoutineId) {
+      const fullSlots = Object.fromEntries(
+        Object.entries(slots).filter(([_, products]) => products.length > 0)
+      )
+
       fetch('/api/forecast', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           routineId: targetRoutineId,
-          slots: slotIdsOnly,
+          slots: fullSlots,
           weekStart: weekStart,
         })
       }).catch(console.error)
@@ -385,13 +475,59 @@ export function RoutineCalendar({
             <h2 className="text-3xl font-semibold">{title}</h2>
             <p className="mt-2 text-neutral-600">{description}</p>
           </div>
-          <button
-            onClick={saveRoutineAction}
-            disabled={saving}
-            className="rounded-xl bg-black px-5 py-3 text-white disabled:opacity-50"
-          >
-            {saving ? 'Saving...' : saveLabel}
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={analyzeIngredients}
+              disabled={analyzing}
+              className="rounded-xl border border-neutral-300 px-5 py-3 text-black hover:bg-neutral-50 disabled:opacity-50 font-medium"
+            >
+              {analyzing ? 'Scanning...' : 'Scan Full Week'}
+            </button>
+            <button
+              onClick={saveRoutineAction}
+              disabled={saving}
+              className="rounded-xl bg-black px-5 py-3 text-white disabled:opacity-50 font-medium"
+            >
+              {saving ? 'Saving...' : saveLabel}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {warnings.filter(w => !dismissedWarnings.has(w.id)).length > 0 && (
+        <div className="mb-6 space-y-3">
+          {warnings.filter(w => !dismissedWarnings.has(w.id)).map(warning => (
+            <div key={warning.id} className={`p-4 rounded-xl border flex items-start justify-between gap-4 ${warning.type === 'clash' ? 'bg-orange-50 border-orange-200 text-orange-900' : 'bg-red-50 border-red-200 text-red-900'}`}>
+              <div>
+                <div className="font-semibold mb-1 flex items-center gap-2">
+                  {warning.type === 'clash' ? '⚠️ Routine Clash Detected' : '🚫 Pore-Clogger Detected'}
+                </div>
+                <p className="text-sm opacity-90">{warning.message}</p>
+                {warning.violatingIngredients && warning.violatingIngredients.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {warning.violatingIngredients.map((ing: string) => (
+                       <span key={ing} className="px-2 py-0.5 bg-red-100/90 border border-red-200 text-red-800 rounded-md text-xs font-bold uppercase tracking-wider">{ing}</span>
+                    ))}
+                  </div>
+                )}
+                {warning.recommendation && (
+                  <p className="text-sm mt-3 font-medium">💡 Tip: {warning.recommendation}</p>
+                )}
+              </div>
+              <button onClick={() => dismissWarning(warning.id)} className="text-xs opacity-60 hover:opacity-100 font-medium whitespace-nowrap px-2 py-1 bg-white/50 rounded-lg">
+                Dismiss
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {scanCompleted && warnings.filter(w => !dismissedWarnings.has(w.id)).length === 0 && (
+        <div className="mb-6 bg-green-50 text-green-900 border border-green-200 p-4 rounded-xl flex items-center justify-between">
+          <div>
+             <span className="font-semibold">✨ Routine checks out!</span> No pore-cloggers or active clashes detected in this week's routine.
+          </div>
+          <button onClick={() => setScanCompleted(false)} className="text-xs opacity-60 hover:opacity-100 font-medium px-2 py-1 bg-white/50 rounded-lg">Dismiss</button>
         </div>
       )}
 
@@ -447,9 +583,12 @@ export function RoutineCalendar({
                               onDragOver={handleDragOver}
                               onDrop={(e) => handleDrop(e, slotKey, index)}
                               onDragEnd={handleDragEnd}
-                              className={`group flex items-start gap-1 rounded-lg border px-1.5 py-1.5 text-left text-[11px] leading-tight shadow-sm cursor-grab active:cursor-grabbing ${draggedItem?.slotKey === slotKey && draggedItem.index === index
+                              className={`group flex items-start gap-1 rounded-lg border px-1.5 py-1.5 text-left text-[11px] leading-tight shadow-sm cursor-grab active:cursor-grabbing transition-colors ${
+                                draggedItem?.slotKey === slotKey && draggedItem.index === index
                                   ? 'border-black bg-neutral-100 opacity-50'
-                                  : 'border-neutral-200 bg-white text-neutral-700 hover:border-neutral-300'
+                                  : activeOffendingIds.has(product.id)
+                                    ? 'border-red-400 bg-red-50 text-red-900 border-[1.5px] shadow-sm shadow-red-200/50'
+                                    : 'border-neutral-200 bg-white text-neutral-700 hover:border-neutral-300'
                                 }`}
                             >
                               <span className="shrink-0 font-medium text-black">{index + 1}.</span>
@@ -490,9 +629,24 @@ export function RoutineCalendar({
         <aside className={`rounded-3xl border p-6 shadow-sm flex flex-col max-h-[800px] overflow-hidden ${
             journalMode ? 'bg-white/70 backdrop-blur-md border-cyan-200 shadow-cyan-900/10' : 'bg-white border-neutral-200'
         }`}>
-          <h3 className="text-xl font-semibold">Product picker</h3>
+          <div className="flex items-center gap-4 border-b border-neutral-200 mb-4 pb-2 shrink-0">
+            <button 
+              onClick={() => setActiveTab('picker')}
+              className={`text-lg font-semibold transition ${activeTab === 'picker' ? 'text-black' : 'text-neutral-400 hover:text-neutral-600'}`}
+            >
+              Add Products
+            </button>
+            <button 
+              onClick={() => setActiveTab('analysis')}
+              className={`text-lg font-semibold transition ${activeTab === 'analysis' ? 'text-black' : 'text-neutral-400 hover:text-neutral-600'}`}
+            >
+              Analysis
+            </button>
+          </div>
 
-          {selectedSlot ? (
+          {activeTab === 'picker' ? (
+            <>
+              {selectedSlot ? (
             <p className="mt-2 text-sm text-neutral-600">
               Editing{' '}
               <span className="font-medium">
@@ -629,9 +783,25 @@ export function RoutineCalendar({
             })}
           </div>
 
-          <p className="mt-6 text-xs text-neutral-500 shrink-0">
-            Tip: apply products from thinnest to thickest consistency.
-          </p>
+            <p className="mt-6 text-xs text-neutral-500 shrink-0">
+              Tip: apply products from thinnest to thickest consistency.
+            </p>
+            </>
+          ) : (
+            <div className="flex-1 overflow-y-auto pr-2 content-start pt-2">
+              {Object.keys(productScores).length === 0 ? (
+                <div className="text-center text-sm text-neutral-500 py-10">
+                   Click "Scan Full Week" to generate standard dermatological scoring for active products in your routine.
+                </div>
+              ) : (
+                uniqueActiveProducts.map(product => {
+                  const scores = productScores[product.id];
+                  if (!scores) return null;
+                  return <ProductScores key={product.id} product={product} scores={scores} />
+                })
+              )}
+            </div>
+          )}
         </aside>
       </div>
     </>
